@@ -1,0 +1,106 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cyberguard}
+      POSTGRES_USER: ${POSTGRES_USER:-cyberguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cyberguard}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cyberguard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  engine:
+    build: ./detection-engine-cpp
+    restart: unless-stopped
+    environment:
+      ENGINE_PORT: 5050
+      ENGINE_KEY: ${ENGINE_KEY:-}
+      MODELS_DIR: /app/models
+      PSL_PATH: /app/data/public_suffix_list.dat
+    # Allows the built-in live packet capture (Network IDS page -> Live monitoring).
+    # In Docker Desktop it sees the container's own network; use the nids-sensor
+    # profile below on Linux to monitor the host's real interfaces.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    ports:
+      - "5050:5050"
+
+  backend:
+    build: ./backend-node
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      engine:
+        condition: service_started
+    environment:
+      PORT: 4000
+      NODE_ENV: production
+      # online | offline | auto (auto = detect internet and switch automatically)
+      CYBERGUARD_MODE: ${CYBERGUARD_MODE:-auto}
+      # How often auto mode re-checks the internet (ms, minimum 15000)
+      CYBERGUARD_PROBE_INTERVAL_MS: ${CYBERGUARD_PROBE_INTERVAL_MS:-60000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      DATABASE_URL: postgres://${POSTGRES_USER:-cyberguard}:${POSTGRES_PASSWORD:-cyberguard}@postgres:5432/${POSTGRES_DB:-cyberguard}
+      DB_SSL: "false"
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-.env}
+      SESSION_SECRET: ${SESSION_SECRET:-change-this-in-.env}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL:-http://localhost:4000/api/auth/google/callback}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      ENGINE_URL: http://engine:5050
+      ENGINE_KEY: ${ENGINE_KEY:-}
+      # Connect-Gmail feature (read-only inbox phishing scan)
+      GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI:-http://localhost:4000/api/gmail/callback}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      # Optional: Google Safe Browsing reputation lookup in the deep URL check
+      SAFE_BROWSING_API_KEY: ${SAFE_BROWSING_API_KEY:-}
+      # Shared secret that NIDS sensors send when pushing alerts (defaults to ENGINE_KEY)
+      SENSOR_KEY: ${SENSOR_KEY:-}
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:4000/api}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # 8080 on the host: Windows often reserves ports ~2900-3000 (Hyper-V/WSL)
+      - "8080:80"
+
+  # Optional always-on network sensor for Linux hosts: sniffs the HOST's
+  # interface and pushes alerts to the backend.
+  #   docker compose --profile live up -d nids-sensor
+  nids-sensor:
+    profiles: ["live"]
+    build: ./detection-engine-cpp
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      NIDS_IFACE: ${NIDS_IFACE:-eth0}
+      NIDS_BPF: ${NIDS_BPF:-}
+      SENSOR_PORT: 5051
+      MODELS_DIR: /app/models
+      PSL_PATH: /app/data/public_suffix_list.dat
+    command: ["/app/cyberguard_engine", "--sensor", "--report", "http://localhost:4000/api/nids/ingest", "--key", "${ENGINE_KEY:-}"]
+
+volumes:
+  pgdata:

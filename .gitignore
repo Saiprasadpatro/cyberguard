@@ -1,0 +1,10 @@
+node_modules/
+build/
+dist/
+*.log
+.env
+.DS_Store
+detection-engine-cpp/build/
+frontend/build/
+backend-node/node_modules/
+frontend/node_modules/

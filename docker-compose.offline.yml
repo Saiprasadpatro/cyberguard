@@ -1,0 +1,13 @@
+# Offline / air-gapped run:
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build
+#
+# Forces CYBERGUARD_MODE=offline and blanks every internet credential, so no
+# scan data ever leaves this machine. Rules, the seven C++ ML models, the
+# Network IDS, history and the dashboard all keep working. For a fully
+# air-gapped host, also block outbound traffic at the firewall.
+services:
+  backend:
+    environment:
+      CYBERGUARD_MODE: offline
+      GEMINI_API_KEY: ""
+      SAFE_BROWSING_API_KEY: ""
